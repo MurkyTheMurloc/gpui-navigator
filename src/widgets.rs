@@ -137,22 +137,8 @@ impl RouterOutlet {
     fn render_named(&self, window: &mut Window, cx: &mut Context<'_, Self>) -> AnyElement {
         let name = self.name.as_deref().unwrap_or("");
 
-        // Try child cache first (mutable borrow, then drop)
-        #[cfg(feature = "cache")]
-        let cached = {
-            let has_router = cx.try_global::<GlobalRouter>().is_some();
-            if has_router {
-                let current_path = cx.global::<GlobalRouter>().current_path().to_string();
-                cx.update_global::<GlobalRouter, _>(|router, _| {
-                    router
-                        .nested_cache_mut()
-                        .get_child(&current_path, Some(name))
-                })
-            } else {
-                None
-            }
-        };
-
+        // Only read the router here: writing a global while drawing makes
+        // retained-mode GPUI rebuild every view that reads it on the next frame.
         let resolved = {
             let router = cx.try_global::<GlobalRouter>();
 
@@ -161,34 +147,21 @@ impl RouterOutlet {
                 return div().into_any_element();
             };
 
-            let current_path = router.current_path().to_string();
-            let stack = router.match_stack();
-            let depth = current_outlet_depth();
-
-            let resolved = resolve_named_outlet(stack, depth, name, &current_path);
-            if let Some((route, params)) = resolved {
-                Some((route, params, current_path))
-            } else {
+            let resolved = resolve_named_outlet(
+                router.match_stack(),
+                current_outlet_depth(),
+                name,
+                router.current_path(),
+            );
+            if resolved.is_none() {
                 trace_log!("Named outlet '{}': no matching route", name);
-                None
             }
+            resolved
         };
 
-        let Some((route, params, current_path)) = resolved else {
+        let Some((route, params)) = resolved else {
             return div().into_any_element();
         };
-
-        // Store in child cache on miss (after immutable borrow is released)
-        #[cfg(feature = "cache")]
-        if cached.is_none() {
-            cx.update_global::<GlobalRouter, _>(|r, _| {
-                r.nested_cache_mut().set_child(
-                    current_path,
-                    Some(name.to_string()),
-                    params.clone(),
-                );
-            });
-        }
 
         route.build(window, cx, &params).unwrap_or_else(|| {
             div()
@@ -474,56 +447,27 @@ fn render_with_transition(
 pub fn render_router_outlet(window: &mut Window, cx: &mut App, name: Option<&str>) -> AnyElement {
     // Named outlet: resolve separately (no enter/exit)
     if let Some(name) = name {
-        // Try child cache first
-        #[cfg(feature = "cache")]
-        let cached = {
-            let has_router = cx.try_global::<GlobalRouter>().is_some();
-            if has_router {
-                let current_path = cx.global::<GlobalRouter>().current_path().to_string();
-                cx.update_global::<GlobalRouter, _>(|router, _| {
-                    router
-                        .nested_cache_mut()
-                        .get_child(&current_path, Some(name))
-                })
-            } else {
-                None
-            }
-        };
-
+        // Read-only, as in `RouterOutlet::render_named`.
         let resolved = {
-            let router = cx.try_global::<GlobalRouter>();
-
-            let Some(router) = router else {
+            let Some(router) = cx.try_global::<GlobalRouter>() else {
                 return div().into_any_element();
             };
 
-            let current_path = router.current_path().to_string();
-            let stack = router.match_stack();
-            let depth = current_outlet_depth();
-
-            if let Some((route, params)) = resolve_named_outlet(stack, depth, name, &current_path) {
-                Some((route, params, current_path))
-            } else {
+            let resolved = resolve_named_outlet(
+                router.match_stack(),
+                current_outlet_depth(),
+                name,
+                router.current_path(),
+            );
+            if resolved.is_none() {
                 trace_log!("render_router_outlet: named outlet '{}' not found", name);
-                None
             }
+            resolved
         };
 
-        let Some((route, params, current_path)) = resolved else {
+        let Some((route, params)) = resolved else {
             return div().into_any_element();
         };
-
-        // Store in child cache on miss (after immutable borrow is released)
-        #[cfg(feature = "cache")]
-        if cached.is_none() {
-            cx.update_global::<GlobalRouter, _>(|r, _| {
-                r.nested_cache_mut().set_child(
-                    current_path,
-                    Some(name.to_string()),
-                    params.clone(),
-                );
-            });
-        }
 
         return route
             .build(window, cx, &params)

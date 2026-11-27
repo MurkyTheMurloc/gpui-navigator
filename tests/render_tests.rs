@@ -208,6 +208,45 @@ fn test_component_route_keeps_state_across_frames(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn test_named_outlet_redraw_does_not_write_router_global(cx: &mut TestAppContext) {
+    let log: Log = Arc::default();
+    let layout_log = log.clone();
+    cx.update(|cx| {
+        init_router(cx, |router| {
+            router.add_route(
+                Route::new("/app", move |window, cx, _| {
+                    layout_log.lock().unwrap().push("layout".to_string());
+                    div()
+                        .child(render_router_outlet(window, cx, Some("sidebar")))
+                        .into_any_element()
+                })
+                .named_outlet("sidebar", vec![Arc::new(logged("", "sidebar", &log))]),
+            );
+        });
+    });
+
+    let writes = Arc::new(AtomicUsize::new(0));
+    let counter = writes.clone();
+    let _subscription = cx.update(|cx| {
+        cx.observe_global::<GlobalRouter>(move |_| {
+            counter.fetch_add(1, Ordering::SeqCst);
+        })
+    });
+
+    let (_, cx) = cx.add_window_view(|_, _| Shell);
+    navigate(cx, "/app");
+    assert_eq!(last(&log).as_deref(), Some("sidebar"));
+
+    // Redrawing must not write the router global: under retained-mode GPUI a
+    // global written while drawing counts as changed and rebuilds every view
+    // that reads it on the next frame.
+    let before = writes.load(Ordering::SeqCst);
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    assert_eq!(writes.load(Ordering::SeqCst), before);
+}
+
+#[gpui::test]
 fn test_router_link_click_navigates(cx: &mut TestAppContext) {
     let log: Log = Arc::default();
     cx.update(|cx| {
